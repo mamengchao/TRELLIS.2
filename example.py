@@ -12,21 +12,6 @@ import sys
 
 os.environ['OPENCV_IO_ENABLE_OPENEXR'] = '1'
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"  # Can save GPU memory
-import cv2
-import imageio
-from PIL import Image
-import torch
-from trellis2.pipelines import Trellis2ImageTo3DPipeline
-from trellis2.utils import render_utils
-from trellis2.renderers import EnvMap
-import o_voxel
-
-
-# --- Default configuration path ---
-DEFAULT_CONFIG_PATH = (
-    "E:/huggingface-cache/hub/models--microsoft--TRELLIS.2-4B"
-    "/snapshots/af44b45f2e35a493886929c6d786e563ec68364d/pipeline.json"
-)
 
 
 def load_config(config_path: str) -> dict:
@@ -57,15 +42,15 @@ def build_parser() -> argparse.ArgumentParser:
     io_group.add_argument("--output-dir", type=str, default="out",
                         help="输出目录 (默认: out)")
     io_group.add_argument("--output-mesh", type=str, default=None,
-                        help="输出 GLB 文件路径 (默认: {output-dir}/sample.glb)")
+                        help="输出 GLB 文件路径 (默认: {output-dir}/<图片名>.glb)")
     io_group.add_argument("--output-video", type=str, default=None,
-                        help="输出视频文件路径 (默认: {output-dir}/sample.mp4)")
+                        help="输出视频文件路径 (默认: {output-dir}/<图片名>.mp4)")
     io_group.add_argument("--no-video", action="store_true",
                         help="跳过视频渲染")
     io_group.add_argument("--no-glb", action="store_true",
                         help="跳过 GLB 导出")
-    io_group.add_argument("--config", type=str, default=DEFAULT_CONFIG_PATH,
-                        help="pipeline.json 配置文件路径 (默认: TRELLIS.2-4B 的 pipeline.json)")
+    io_group.add_argument("--config", type=str, default=None,
+                        help="pipeline.json 配置文件路径（不指定则使用 HuggingFace 模型自带的配置）")
 
     # --- 管线 ---
     pipe_group = parser.add_argument_group("管线")
@@ -73,7 +58,7 @@ def build_parser() -> argparse.ArgumentParser:
                           help="随机种子 (默认: 42)")
     pipe_group.add_argument("--pipeline-type", type=str, default=None,
                           choices=['512', '1024', '1024_cascade', '1536_cascade'],
-                          help="管线分辨率类型 (默认: 来自 pipeline.json)")
+                          help="管线分辨率类型（默认: 1024_cascade）")
     pipe_group.add_argument("--preprocess-image", default=True, action=argparse.BooleanOptionalAction,
                           help="预处理图片（去除背景等）(默认: True)")
     pipe_group.add_argument("--max-num-tokens", type=int, default=49152,
@@ -82,35 +67,35 @@ def build_parser() -> argparse.ArgumentParser:
     # --- 稀疏结构采样器 ---
     ss_group = parser.add_argument_group("稀疏结构采样器")
     ss_group.add_argument("--ss-steps", type=int, default=None,
-                        help="稀疏结构采样步数 (默认: 来自 pipeline.json)")
+                        help="采样步数（默认: 12）")
     ss_group.add_argument("--ss-guidance-strength", type=float, default=None,
-                        help="稀疏结构引导强度 (默认: 来自 pipeline.json)")
+                        help="引导强度（默认: 7.5）")
     ss_group.add_argument("--ss-guidance-rescale", type=float, default=None,
-                        help="稀疏结构引导重缩放 (默认: 来自 pipeline.json)")
+                        help="引导重缩放（默认: 0.7）")
     ss_group.add_argument("--ss-rescale-t", type=float, default=None,
-                        help="稀疏结构重缩放 T (默认: 来自 pipeline.json)")
+                        help="重缩放 T（默认: 5.0）")
 
     # --- 形状 SLat 采样器 ---
     shape_group = parser.add_argument_group("形状 SLat 采样器")
     shape_group.add_argument("--shape-steps", type=int, default=None,
-                           help="形状 SLat 采样步数 (默认: 来自 pipeline.json)")
+                           help="采样步数（默认: 12）")
     shape_group.add_argument("--shape-guidance-strength", type=float, default=None,
-                           help="形状 SLat 引导强度 (默认: 来自 pipeline.json)")
+                           help="引导强度（默认: 7.5）")
     shape_group.add_argument("--shape-guidance-rescale", type=float, default=None,
-                           help="形状 SLat 引导重缩放 (默认: 来自 pipeline.json)")
+                           help="引导重缩放（默认: 0.5）")
     shape_group.add_argument("--shape-rescale-t", type=float, default=None,
-                           help="形状 SLat 重缩放 T (默认: 来自 pipeline.json)")
+                           help="重缩放 T（默认: 3.0）")
 
     # --- 纹理 SLat 采样器 ---
     tex_group = parser.add_argument_group("纹理 SLat 采样器")
     tex_group.add_argument("--tex-steps", type=int, default=None,
-                          help="纹理 SLat 采样步数 (默认: 来自 pipeline.json)")
+                          help="采样步数（默认: 12）")
     tex_group.add_argument("--tex-guidance-strength", type=float, default=None,
-                          help="纹理 SLat 引导强度 (默认: 来自 pipeline.json)")
+                          help="引导强度（默认: 1.0）")
     tex_group.add_argument("--tex-guidance-rescale", type=float, default=None,
-                          help="纹理 SLat 引导重缩放 (默认: 来自 pipeline.json)")
+                          help="引导重缩放（默认: 0.0）")
     tex_group.add_argument("--tex-rescale-t", type=float, default=None,
-                          help="纹理 SLat 重缩放 T (默认: 来自 pipeline.json)")
+                          help="重缩放 T（默认: 3.0）")
 
     # --- GLB 导出 ---
     glb_group = parser.add_argument_group("GLB 导出")
@@ -160,13 +145,16 @@ def main():
         sys.exit(1)
     print(f"[1/5] Loading image: {image_path}")
 
-    # --- Load config defaults ---
+    # --- Load config defaults (optional) ---
     config = {}
-    if os.path.exists(args.config):
-        print(f"[2/5] Loading config: {args.config}")
+    if args.config:
+        if not os.path.exists(args.config):
+            print(f"错误: 配置文件不存在: {args.config}")
+            sys.exit(1)
+        print(f"[2/5] 加载配置文件: {args.config}")
         config = load_config(args.config)
     else:
-        print(f"[2/5] Config not found at {args.config}, using built-in defaults")
+        print("[2/5] 使用 HuggingFace 模型自带的配置")
 
     # --- Resolve pipeline_type ---
     pipeline_type = args.pipeline_type or config.get('pipeline_type', '1024_cascade')
@@ -185,6 +173,16 @@ def main():
         print(f"    Texture SLat params: {tex_params}")
     else:
         print("    Texture SLat: disabled (no config or CLI params)")
+
+    # --- 延迟加载重型库（加速 --help 响应）---
+    import cv2
+    import torch
+    from PIL import Image
+    import imageio
+    from trellis2.pipelines import Trellis2ImageTo3DPipeline
+    from trellis2.utils import render_utils
+    from trellis2.renderers import EnvMap
+    import o_voxel
 
     # --- Setup environment map ---
     envmap = EnvMap(torch.tensor(
@@ -215,8 +213,9 @@ def main():
 
     # --- Ensure output directory ---
     os.makedirs(args.output_dir, exist_ok=True)
-    output_video = args.output_video or os.path.join(args.output_dir, "sample.mp4")
-    output_mesh = args.output_mesh or os.path.join(args.output_dir, "sample.glb")
+    image_basename = os.path.splitext(os.path.basename(image_path))[0]
+    output_video = args.output_video or os.path.join(args.output_dir, f"{image_basename}.mp4")
+    output_mesh = args.output_mesh or os.path.join(args.output_dir, f"{image_basename}.glb")
 
     # --- Render Video ---
     if not args.no_video:

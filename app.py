@@ -34,11 +34,6 @@ STEPS = 8
 DEFAULT_MODE = 3
 DEFAULT_STEP = 3
 
-# Initialize icon base64 for MODES (must be at module level for Gradio handlers)
-for _mode in MODES:
-    _icon = Image.open(_mode['icon'])
-    _mode['icon_base64'] = image_to_base64(_icon)
-
 
 css = """
 /* Overwrite Gradio Default Style */
@@ -302,6 +297,12 @@ def image_to_base64(image):
     image.save(buffered, format="jpeg", quality=85)
     img_str = base64.b64encode(buffered.getvalue()).decode()
     return f"data:image/jpeg;base64,{img_str}"
+
+
+# Initialize icon base64 for MODES (must be at module level for Gradio handlers)
+for _mode in MODES:
+    _icon = Image.open(_mode['icon'])
+    _mode['icon_base64'] = image_to_base64(_icon)
 
 
 def start_session(req: gr.Request):
