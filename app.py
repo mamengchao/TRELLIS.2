@@ -13,10 +13,11 @@ from PIL import Image
 import base64
 import io
 from trellis2.modules.sparse import SparseTensor
-from trellis2.pipelines import Trellis2ImageTo3DPipeline
+from trellis2.pipelines import Trellis2ImageTo3DPipeline, Trellis2TexturingPipeline
 from trellis2.renderers import EnvMap
 from trellis2.utils import render_utils
 import o_voxel
+import trimesh
 
 
 MAX_SEED = np.iinfo(np.int32).max
@@ -32,6 +33,11 @@ MODES = [
 STEPS = 8
 DEFAULT_MODE = 3
 DEFAULT_STEP = 3
+
+# Initialize icon base64 for MODES (must be at module level for Gradio handlers)
+for _mode in MODES:
+    _icon = Image.open(_mode['icon'])
+    _mode['icon_base64'] = image_to_base64(_icon)
 
 
 css = """
@@ -322,14 +328,17 @@ def preprocess_image(image: Image.Image) -> Image.Image:
     return processed_image
 
 
-def pack_state(latents: Tuple[SparseTensor, SparseTensor, int]) -> dict:
+def pack_state(latents: Tuple[SparseTensor, SparseTensor, int], textured_mesh_path: str = None) -> dict:
     shape_slat, tex_slat, res = latents
-    return {
+    state = {
         'shape_slat_feats': shape_slat.feats.cpu().numpy(),
         'tex_slat_feats': tex_slat.feats.cpu().numpy(),
         'coords': shape_slat.coords.cpu().numpy(),
         'res': res,
     }
+    if textured_mesh_path is not None:
+        state['textured_mesh_path'] = textured_mesh_path
+    return state
 
 
 def unpack_state(state: dict) -> Tuple[SparseTensor, SparseTensor, int]:
@@ -352,6 +361,7 @@ def image_to_3d(
     image: Image.Image,
     seed: int,
     resolution: str,
+    generate_texturing: bool,
     ss_guidance_strength: float,
     ss_guidance_rescale: float,
     ss_sampling_steps: int,
@@ -364,6 +374,12 @@ def image_to_3d(
     tex_slat_guidance_rescale: float,
     tex_slat_sampling_steps: int,
     tex_slat_rescale_t: float,
+    tex_guidance_strength: float,
+    tex_guidance_rescale: float,
+    tex_sampling_steps: int,
+    tex_rescale_t: float,
+    tex_resolution: str,
+    tex_texture_size: int,
     req: gr.Request,
     progress=gr.Progress(track_tqdm=True),
 ) -> str:
@@ -402,6 +418,40 @@ def image_to_3d(
     images = render_utils.render_snapshot(mesh, resolution=1024, r=2, fov=36, nviews=STEPS, envmap=envmap)
     state = pack_state(latents)
     torch.cuda.empty_cache()
+
+    # --- Optional: Run texturing pipeline for higher quality textures ---
+    textured_mesh_path = None
+    if generate_texturing:
+        try:
+            progress(0.95, "Running texturing pipeline...")
+            # Convert Mesh to trimesh.Trimesh for the texturing pipeline
+            mesh_trimesh = trimesh.Trimesh(
+                vertices=mesh.vertices.detach().cpu().numpy(),
+                faces=mesh.faces.detach().cpu().numpy(),
+                process=False,
+            )
+            textured_mesh = texturing_pipeline.run(
+                mesh_trimesh,
+                image,
+                preprocess_image=False,
+                seed=seed,
+                resolution=int(tex_resolution),
+                texture_size=tex_texture_size,
+                tex_slat_sampler_params={
+                    "steps": tex_sampling_steps,
+                    "guidance_strength": tex_guidance_strength,
+                    "guidance_rescale": tex_guidance_rescale,
+                    "rescale_t": tex_rescale_t,
+                },
+            )
+            user_dir = os.path.join(TMP_DIR, str(req.session_hash))
+            os.makedirs(user_dir, exist_ok=True)
+            textured_mesh_path = os.path.join(user_dir, 'textured.glb')
+            textured_mesh.export(textured_mesh_path, extension_webp=True)
+            state = pack_state(latents, textured_mesh_path)
+        except Exception as e:
+            print(f"Texturing pipeline failed (falling back to base result): {e}")
+
     
     # --- HTML Construction ---
     # The Stack of 48 Images
@@ -488,6 +538,17 @@ def extract_glb(
         str: The path to the extracted GLB file.
     """
     user_dir = os.path.join(TMP_DIR, str(req.session_hash))
+
+    # --- Use pre-textured mesh if available ---
+    textured_mesh_path = state.get('textured_mesh_path')
+    if textured_mesh_path and os.path.exists(textured_mesh_path):
+        now = datetime.now()
+        timestamp = now.strftime("%Y-%m-%dT%H%M%S") + f".{now.microsecond // 1000:03d}"
+        os.makedirs(user_dir, exist_ok=True)
+        glb_path = os.path.join(user_dir, f'sample_{timestamp}.glb')
+        shutil.copy(textured_mesh_path, glb_path)
+        return glb_path, glb_path
+
     shape_slat, tex_slat, res = unpack_state(state)
     mesh = pipeline.decode_latent(shape_slat, tex_slat, res)[0]
     glb = o_voxel.postprocess.to_glb(
@@ -552,7 +613,17 @@ with gr.Blocks(delete_cache=(600, 600)) as demo:
                     tex_slat_guidance_strength = gr.Slider(1.0, 10.0, label="Guidance Strength", value=1.0, step=0.1)
                     tex_slat_guidance_rescale = gr.Slider(0.0, 1.0, label="Guidance Rescale", value=0.0, step=0.01)
                     tex_slat_sampling_steps = gr.Slider(1, 50, label="Sampling Steps", value=12, step=1)
-                    tex_slat_rescale_t = gr.Slider(1.0, 6.0, label="Rescale T", value=3.0, step=0.1)                
+                    tex_slat_rescale_t = gr.Slider(1.0, 6.0, label="Rescale T", value=3.0, step=0.1)
+                gr.Markdown("Stage 4: Texturing Pipeline (use when Generate Texturing is checked)")
+                with gr.Column(visible=False) as texturing_params_col:
+                    with gr.Row():
+                        tex_guidance_strength = gr.Slider(1.0, 10.0, label="Guidance Strength", value=1.0, step=0.1)
+                        tex_guidance_rescale = gr.Slider(0.0, 1.0, label="Guidance Rescale", value=0.0, step=0.01)
+                        tex_sampling_steps = gr.Slider(1, 50, label="Sampling Steps", value=12, step=1)
+                        tex_rescale_t = gr.Slider(1.0, 6.0, label="Rescale T", value=3.0, step=0.1)
+                    with gr.Row():
+                        tex_resolution = gr.Radio(["512", "1024"], label="Resolution", value="1024")
+                        tex_texture_size = gr.Slider(1024, 4096, label="Texture Size", value=2048, step=1024)                
 
         with gr.Column(scale=10):
             with gr.Walkthrough(selected=0) as walkthrough:
@@ -588,6 +659,13 @@ with gr.Blocks(delete_cache=(600, 600)) as demo:
         outputs=[image_prompt],
     )
 
+    # Toggle texturing params visibility
+    generate_texturing.change(
+        lambda show: gr.update(visible=show),
+        inputs=[generate_texturing],
+        outputs=[texturing_params_col],
+    )
+
     generate_btn.click(
         get_seed,
         inputs=[randomize_seed, seed],
@@ -597,10 +675,12 @@ with gr.Blocks(delete_cache=(600, 600)) as demo:
     ).then(
         image_to_3d,
         inputs=[
-            image_prompt, seed, resolution,
+            image_prompt, seed, resolution, generate_texturing,
             ss_guidance_strength, ss_guidance_rescale, ss_sampling_steps, ss_rescale_t,
             shape_slat_guidance_strength, shape_slat_guidance_rescale, shape_slat_sampling_steps, shape_slat_rescale_t,
             tex_slat_guidance_strength, tex_slat_guidance_rescale, tex_slat_sampling_steps, tex_slat_rescale_t,
+            tex_guidance_strength, tex_guidance_rescale, tex_sampling_steps, tex_rescale_t,
+            tex_resolution, tex_texture_size,
         ],
         outputs=[output_buf, preview_output],
     )
@@ -619,14 +699,19 @@ if __name__ == "__main__":
     os.makedirs(TMP_DIR, exist_ok=True)
 
     # Construct ui components
-    btn_img_base64_strs = {}
-    for i in range(len(MODES)):
-        icon = Image.open(MODES[i]['icon'])
-        MODES[i]['icon_base64'] = image_to_base64(icon)
 
-    pipeline = Trellis2ImageTo3DPipeline.from_pretrained('microsoft/TRELLIS.2-4B')
+    load_starttime = datetime.now()
+    pipeline = Trellis2ImageTo3DPipeline.from_pretrained("microsoft/TRELLIS.2-4B")
     pipeline.cuda()
-    
+    print("加载Trellis2ImageTo3DPipeline耗时：", datetime.now() - load_starttime, "秒")
+
+    load_starttime = datetime.now()
+    texturing_pipeline = Trellis2TexturingPipeline.from_pretrained(
+        "microsoft/TRELLIS.2-4B", config_file="texturing_pipeline.json"
+    )
+    texturing_pipeline.cuda()
+    print("加载Trellis2TexturingPipeline耗时：", datetime.now() - load_starttime, "秒")
+
     envmap = {
         'forest': EnvMap(torch.tensor(
             cv2.cvtColor(cv2.imread('assets/hdri/forest.exr', cv2.IMREAD_UNCHANGED), cv2.COLOR_BGR2RGB),
@@ -641,5 +726,5 @@ if __name__ == "__main__":
             dtype=torch.float32, device='cuda'
         )),
     }
-    
+
     demo.launch(css=css, head=head)
