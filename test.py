@@ -1,0 +1,2 @@
+from nvdiffrec_render.light import EnvironmentLight
+print(EnvironmentLight.__class__.__qualname__)

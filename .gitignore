@@ -205,3 +205,7 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+out/sample_textured.glb
+out/sample.glb
+out/sample.mp4
+out/the_forgotten_knight_textured.glb

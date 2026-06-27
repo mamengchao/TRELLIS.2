@@ -301,8 +301,8 @@ def image_to_base64(image):
 def start_session(req: gr.Request):
     user_dir = os.path.join(TMP_DIR, str(req.session_hash))
     os.makedirs(user_dir, exist_ok=True)
-    
-    
+
+
 def end_session(req: gr.Request):
     user_dir = os.path.join(TMP_DIR, str(req.session_hash))
     shutil.rmtree(user_dir)
@@ -330,8 +330,8 @@ def pack_state(latents: Tuple[SparseTensor, SparseTensor, int]) -> dict:
         'coords': shape_slat.coords.cpu().numpy(),
         'res': res,
     }
-    
-    
+
+
 def unpack_state(state: dict) -> Tuple[SparseTensor, SparseTensor, int]:
     shape_slat = SparseTensor(
         feats=torch.from_numpy(state['shape_slat_feats']).cuda(),
@@ -520,19 +520,20 @@ with gr.Blocks(delete_cache=(600, 600)) as demo:
     * Upload an image (preferably with an alpha-masked foreground object) and click Generate to create a 3D asset.
     * Click Extract GLB to export and download the generated GLB file if you're satisfied with the result. Otherwise, try another time.
     """)
-    
+
     with gr.Row():
         with gr.Column(scale=1, min_width=360):
             image_prompt = gr.Image(label="Image Prompt", format="png", image_mode="RGBA", type="pil", height=400)
-            
+
             resolution = gr.Radio(["512", "1024", "1536"], label="Resolution", value="1024")
             seed = gr.Slider(0, MAX_SEED, label="Seed", value=0, step=1)
             randomize_seed = gr.Checkbox(label="Randomize Seed", value=True)
             decimation_target = gr.Slider(100000, 1000000, label="Decimation Target", value=500000, step=10000)
             texture_size = gr.Slider(1024, 4096, label="Texture Size", value=2048, step=1024)
-            
+            generate_texturing = gr.Checkbox(False, label="Generate Texturing")
+
             generate_btn = gr.Button("Generate")
-                
+
             with gr.Accordion(label="Advanced Settings", open=False):                
                 gr.Markdown("Stage 1: Sparse Structure Generation")
                 with gr.Row():
@@ -561,7 +562,7 @@ with gr.Blocks(delete_cache=(600, 600)) as demo:
                 with gr.Step("Extract", id=1):
                     glb_output = gr.Model3D(label="Extracted GLB", height=724, show_label=True, display_mode="solid", clear_color=(0.25, 0.25, 0.25, 1.0))
                     download_btn = gr.DownloadButton(label="Download GLB")
-                    
+
         with gr.Column(scale=1, min_width=172):
             examples = gr.Examples(
                 examples=[
@@ -574,14 +575,13 @@ with gr.Blocks(delete_cache=(600, 600)) as demo:
                 run_on_click=True,
                 examples_per_page=18,
             )
-                    
+
     output_buf = gr.State()
-    
 
     # Handlers
     demo.load(start_session)
     demo.unload(end_session)
-    
+
     image_prompt.upload(
         preprocess_image,
         inputs=[image_prompt],
@@ -604,7 +604,7 @@ with gr.Blocks(delete_cache=(600, 600)) as demo:
         ],
         outputs=[output_buf, preview_output],
     )
-    
+
     extract_btn.click(
         lambda: gr.Walkthrough(selected=1), outputs=walkthrough
     ).then(
@@ -612,7 +612,7 @@ with gr.Blocks(delete_cache=(600, 600)) as demo:
         inputs=[output_buf, decimation_target, texture_size],
         outputs=[glb_output, download_btn],
     )
-        
+
 
 # Launch the Gradio app
 if __name__ == "__main__":
