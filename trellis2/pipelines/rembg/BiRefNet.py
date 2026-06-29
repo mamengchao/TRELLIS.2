@@ -9,7 +9,7 @@ class BiRefNet:
     def __init__(self, model_name: str = "ZhengPeng7/BiRefNet"):
         print("BiRefNet model_name:",model_name)
         if model_name == "briaai/RMBG-2.0":
-            model_name = "ZhengPeng7/BiRefNet"
+            model_name = "camenduru/RMBG-2.0"
         self.model = AutoModelForImageSegmentation.from_pretrained(
             model_name, trust_remote_code=True
         )
