@@ -5,6 +5,7 @@ TRELLIS.2 图片转3D 命令行工具
     python example.py --image assets/example_image/demo.webp --seed 42
     python example.py --pipeline-type 1536_cascade --tex-steps 20 --output-dir ./my_output
 """
+from datetime import datetime
 import os
 import argparse
 import json
@@ -257,4 +258,6 @@ def main():
 
 
 if __name__ == "__main__":
+    starttime = datetime.now()
     main()
+    print("共耗时：", datetime.now() - starttime)
